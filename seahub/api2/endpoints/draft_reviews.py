@@ -11,6 +11,8 @@ from seaserv import seafile_api
 from seahub.api2.authentication import TokenAuthentication
 from seahub.api2.throttling import UserRateThrottle
 from seahub.api2.utils import api_error
+from seahub.constants import PERMISSION_READ_WRITE
+from seahub.views import check_folder_permission
 
 from seahub.drafts.models import Draft, DraftReview, DraftReviewExist, \
         DraftFileConflict, ReviewReviewer
@@ -72,10 +74,22 @@ class DraftReviewView(APIView):
             return api_error(status.HTTP_404_NOT_FOUND,
                              'Review %s not found' % pk)
 
-        r.status = st
-        r.save()
+        perm = check_folder_permission(request, r.origin_repo_id, r.origin_file_path)
+        
+        # Review owner and 'rw' perm on the original file to close review 
+        if st == 'closed':
+            if perm != PERMISSION_READ_WRITE or request.user.username != r.creator:
+                error_msg = 'Permission denied.'
+                return api_error(status.HTTP_403_FORBIDDEN, error_msg)
 
+            r.status = st
+            r.save()
+        
+        # Only 'rw' perm on original file can publish review
         if st == 'finished':
+            if perm != PERMISSION_READ_WRITE:
+                error_msg = 'Permission denied.'
+                return api_error(status.HTTP_403_FORBIDDEN, error_msg)
 
             try:
                 d = Draft.objects.get(pk=r.draft_id_id)
@@ -91,6 +105,7 @@ class DraftReviewView(APIView):
 
             file_id = seafile_api.get_file_id_by_path(r.origin_repo_id, r.origin_file_path)
             r.publish_file_version = file_id
+            r.status = st
             r.save()
             d.delete()
 
